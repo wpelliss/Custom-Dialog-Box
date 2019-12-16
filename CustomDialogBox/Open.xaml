@@ -1,0 +1,17 @@
+﻿<Window x:Class="CustomDialogBox.Open"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
+        xmlns:mc="http://schemas.openxmlformats.org/markup-compatibility/2006"
+        xmlns:local="clr-namespace:CustomDialogBox"
+        mc:Ignorable="d"
+        Title="Open" Height="450" Width="800" Loaded="Window_Loaded">
+    <Grid>
+        <Grid.Background>
+            <SolidColorBrush Color="{DynamicResource {x:Static SystemColors.MenuBarColorKey}}"/>
+        </Grid.Background>
+        <TreeView x:Name="treeView" SelectedItemChanged="TreeView_SelectedItemChanged" HorizontalAlignment="Left" Height="401" Margin="10,10,0,0" VerticalAlignment="Top" Width="200"/>
+        <TreeView x:Name="treeViewDetails" HorizontalAlignment="Left" Height="401" Margin="215,10,0,0" VerticalAlignment="Top" Width="568"/>
+
+    </Grid>
+</Window>
