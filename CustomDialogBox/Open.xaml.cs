@@ -1,190 +1,140 @@
-﻿using System;
-using System.Collections.Generic;
+using System.ComponentModel;
 using System.IO;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
-using System.Windows.Documents;
 using System.Windows.Input;
-using System.Windows.Media;
-using System.Windows.Media.Imaging;
-using System.Windows.Navigation;
-using System.Windows.Shapes;
 
 namespace CustomDialogBox
 {
     /// <summary>
-    /// Logique d'interaction pour Open.xaml
+    /// Thin relay — toute la logique metier est dans OpenViewModel.
+    /// Ce code-behind se contente de router les evenements UI vers le VM.
     /// </summary>
     public partial class Open : Window
     {
+        private readonly OpenViewModel _vm;
+
+        // Memorise la colonne et la direction du dernier tri pour le tri cyclique.
+        private string         _lastSortProperty;
+        private ListSortDirection _lastSortDirection = ListSortDirection.Ascending;
+
+        /// <summary>
+        /// Chemin du fichier selectionne, expose vers l'appelant.
+        /// _vm est garanti non-null (affecte dans le constructeur avant tout appel externe).
+        /// </summary>
+        public string SelectedPath => _vm.SelectedPath;
+
         public Open()
         {
             InitializeComponent();
-            this.LoadDirectories();
+            _vm = new OpenViewModel();
+            DataContext = _vm;
         }
 
-        private void Window_Loaded(object sender, RoutedEventArgs e)
+        // Note: le handler Window_Loaded n'est plus branche dans le XAML car
+        // LoadDrives est deja appele dans le constructeur d'OpenViewModel.
+
+        // ------------------------------------------------------------------ //
+        //  TreeView (navigation arborescente)
+        // ------------------------------------------------------------------ //
+
+        private void TreeView_SelectedItemChanged(
+            object sender,
+            RoutedPropertyChangedEventArgs<object> e)
         {
-            //LoadDirectories();
+            var node = e.NewValue as FileSystemNodeViewModel;
+            if (node == null)
+                return;
+
+            // Si c'est un repertoire (ou lecteur), on navigue dedans.
+            if (!node.IsFile)
+                _vm.SetCurrentDirectory(node.FullPath);
         }
 
-        public void LoadDirectories()
+        // ------------------------------------------------------------------ //
+        //  ListView (contenu du repertoire courant)
+        // ------------------------------------------------------------------ //
+
+        private void ListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            var drives = DriveInfo.GetDrives();                 // On récupère les lecteurs
-            foreach (var drive in drives)                       // Parcours des lecteurs
+            // Utiliser e.AddedItems pour eviter le couplage implicite au nom du controle XAML.
+            if (e.AddedItems.Count == 0) return;
+
+            var node = e.AddedItems[0] as FileSystemNodeViewModel;
+            if (node == null) return;
+
+            // On selectionne uniquement les fichiers, pas les repertoires.
+            if (node.IsFile)
+                _vm.SelectedPath = node.FullPath;
+        }
+
+        private void ListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
+        {
+            // e.AddedItems n'est pas disponible ici — on lit le SelectedItem du sender.
+            var lv   = sender as ListView;
+            var node = lv?.SelectedItem as FileSystemNodeViewModel;
+            if (node == null) return;
+
+            if (node.IsFile)
+                DialogResult = true;
+            else
+                _vm.SetCurrentDirectory(node.FullPath);
+        }
+
+        // ------------------------------------------------------------------ //
+        //  Boutons
+        // ------------------------------------------------------------------ //
+
+        private void BtnOpen_Click(object sender, RoutedEventArgs e)
+        {
+            if (!_vm.HasSelection) return;
+
+            // Validation defensive : le fichier peut avoir ete supprime entre
+            // la navigation et le clic Ouvrir.
+            if (string.IsNullOrWhiteSpace(_vm.SelectedPath) ||
+                !File.Exists(_vm.SelectedPath))
             {
-                this.treeView.Items.Add(this.GetItem(drive));   // Ajout des lecteurs au treeview G
+                // Invalider la selection ; l'utilisateur doit re-selectionner.
+                _vm.SelectedPath = null;
+                return;
             }
+
+            DialogResult = true;
         }
 
-        private TreeViewItem GetItem(DriveInfo drive)
+        private void BtnCancel_Click(object sender, RoutedEventArgs e)
         {
-            var item = new TreeViewItem
-            {
-                Header = drive.Name,
-                DataContext = drive,
-                Tag = drive
-            };                                                      // Creation du treeViewItem
-            this.AddDummy(item);                                    // Ajout du placeholder pour les enfants
-            item.Expanded += new RoutedEventHandler(item_Expanded); // Ajout de l'evenement d'expension
-            return item;                                            // On retourne l'item pour l'ajouter au treeview
+            DialogResult = false;
         }
 
-        private TreeViewItem GetItem(DirectoryInfo directory)
-        {
-            var item = new TreeViewItem
-            {
-                Header = directory.Name,
-                DataContext = directory,
-                Tag = directory
-            };
-            this.AddDummy(item);
-            item.Expanded += new RoutedEventHandler(item_Expanded);
-            return item;
-        }
+        // ------------------------------------------------------------------ //
+        //  Tri par clic sur l'en-tete de colonne
+        // ------------------------------------------------------------------ //
 
-        private TreeViewItem GetItem(FileInfo file)
+        private void GridViewColumnHeader_Click(object sender, RoutedEventArgs e)
         {
-            var item = new TreeViewItem
-            {
-                Header = file.Name,
-                DataContext = file,
-                Tag = file
-            };
-            return item;
-        }
+            var header = sender as GridViewColumnHeader;
+            if (header == null) return;
 
-        private void AddDummy(TreeViewItem item)
-        {
-            item.Items.Add(new DummyTreeViewItem());
-        }
+            string property = header.Tag as string;
+            if (string.IsNullOrEmpty(property)) return;
 
-        private bool HasDummy(TreeViewItem item)
-        {
-            return item.HasItems && (item.Items.OfType<TreeViewItem>().ToList().FindAll(tvi => tvi is DummyTreeViewItem).Count > 0);
-        }
+            // Alterner la direction si on reclique sur la meme colonne.
+            ListSortDirection direction = ListSortDirection.Ascending;
+            if (property == _lastSortProperty)
+                direction = _lastSortDirection == ListSortDirection.Ascending
+                    ? ListSortDirection.Descending
+                    : ListSortDirection.Ascending;
 
-        private void RemoveDummy(TreeViewItem item)
-        {
-            var dummies = item.Items.OfType<TreeViewItem>().ToList().FindAll(tvi => tvi is DummyTreeViewItem);
-            foreach (var dummy in dummies)
-            {
-                item.Items.Remove(dummy);
-            }
-        }
+            _lastSortProperty  = property;
+            _lastSortDirection = direction;
 
-        void item_Expanded(object sender, RoutedEventArgs e)
-        {
-            LoadEverything(sender);
-        }
+            var view = CollectionViewSource.GetDefaultView(listViewFiles.ItemsSource);
+            if (view == null) return;
 
-        private void LoadEverything(object sender)
-        {
-            treeViewDetails.Items.Clear();
-            var item = (TreeViewItem)sender;
-            //if (this.HasDummy(item))
-            //{
-            this.Cursor = Cursors.Wait;
-            this.RemoveDummy(item);
-            this.ExploreDirectories(item);
-            this.ExploreFiles(item);
-            this.Cursor = Cursors.Arrow;
-            //}
-        }
-
-        private void ExploreDirectories(TreeViewItem item)
-        {
-            var directoryInfo = (DirectoryInfo)null;
-            if (item.Tag is DriveInfo)
-            {
-                directoryInfo = ((DriveInfo)item.Tag).RootDirectory;
-            }
-            else if (item.Tag is DirectoryInfo)
-            {
-                directoryInfo = (DirectoryInfo)item.Tag;
-            }
-            else if (item.Tag is FileInfo)
-            {
-                directoryInfo = ((FileInfo)item.Tag).Directory;
-            }
-            if (object.ReferenceEquals(directoryInfo, null)) return;
-            foreach (var directory in directoryInfo.GetDirectories())
-            {
-                var isHidden = (directory.Attributes & FileAttributes.Hidden) == FileAttributes.Hidden;
-                var isSystem = (directory.Attributes & FileAttributes.System) == FileAttributes.System;
-                if (!isHidden && !isSystem)
-                {
-                    //treeViewDetails.Items.Add(this.GetItem(directory));
-                    item.Items.Add(this.GetItem(directory));
-                }
-            }
-        }
-
-        private void ExploreFiles(TreeViewItem item)
-        {
-            var directoryInfo = (DirectoryInfo)null;
-            if (item.Tag is DriveInfo)
-            {
-                directoryInfo = ((DriveInfo)item.Tag).RootDirectory;
-            }
-            else if (item.Tag is DirectoryInfo)
-            {
-                directoryInfo = (DirectoryInfo)item.Tag;
-            }
-            else if (item.Tag is FileInfo)
-            {
-                directoryInfo = ((FileInfo)item.Tag).Directory;
-            }
-            if (object.ReferenceEquals(directoryInfo, null)) return;
-            foreach (var file in directoryInfo.GetFiles())
-            {
-                var isHidden = (file.Attributes & FileAttributes.Hidden) == FileAttributes.Hidden;
-                var isSystem = (file.Attributes & FileAttributes.System) == FileAttributes.System;
-                if (!isHidden && !isSystem)
-                {
-                    treeViewDetails.Items.Add(this.GetItem(file));
-                    //item.Items.Add(this.GetItem(file));
-                }
-            }
-        }
-
-        private void TreeView_SelectedItemChanged(object sender, RoutedPropertyChangedEventArgs<object> e)
-        {
-            LoadEverything(treeView.SelectedItem);
-        }
-    }
-
-    public class DummyTreeViewItem : TreeViewItem
-    {
-        public DummyTreeViewItem()
-            : base()
-        {
-            base.Header = "Dummy";
-            base.Tag = "Dummy";
+            view.SortDescriptions.Clear();
+            view.SortDescriptions.Add(new SortDescription(property, direction));
         }
     }
 }

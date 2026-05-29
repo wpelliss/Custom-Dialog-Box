@@ -73,9 +73,14 @@
     </Page>
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="FileSystemNodeViewModel.cs" />
+    <Compile Include="FileSystemService.cs" />
     <Compile Include="Open.xaml.cs">
       <DependentUpon>Open.xaml</DependentUpon>
     </Compile>
+    <Compile Include="OpenViewModel.cs" />
+    <Compile Include="RelayCommand.cs" />
+    <Compile Include="ShellIcons.cs" />
     <Compile Include="Properties\AssemblyInfo.cs">
       <SubType>Code</SubType>
     </Compile>
