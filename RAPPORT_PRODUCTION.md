@@ -2,7 +2,7 @@
 
 ## Resume Executif
 
-Sprint de refactorisation complète d'une boîte de dialogue fichier WPF custom. Point de départ : 22/100, état quasi-non-fonctionnel (UI freezes, zero robustesse, architecture monolithique). Point d'arrivée : 82/100, codebase structuré MVVM, async propre, robuste aux cas limites courants. Le build final est en échec après 3 tentatives — les causes résiduelles sont identifiées et documentées ci-dessous.
+Sprint de refactorisation complète d'une boîte de dialogue fichier WPF custom. Point de départ : 22/100, état quasi-non-fonctionnel (UI freezes, zero robustesse, architecture monolithique). Point d'arrivée : **82/100, build SUCCÈS** (MSBuild VS2022 Community), commit `cd915c0`. Deux correctifs post-workflow appliqués manuellement : ajout propriétés `Icon/NodeType/Size/DateModified` manquantes dans `FileSystemNodeViewModel`, et correction ordre `catch` (`PathTooLongException` avant `IOException`).
 
 ---
 
