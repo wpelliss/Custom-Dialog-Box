@@ -8,21 +8,18 @@ using System.Windows.Input;
 namespace CustomDialogBox
 {
     /// <summary>
-    /// Thin relay — toute la logique metier est dans OpenViewModel.
-    /// Ce code-behind se contente de router les evenements UI vers le VM.
+    /// Thin relay — toute la logique métier est dans OpenViewModel.
+    /// Ce code-behind route les événements UI vers le VM et gère les
+    /// comportements purement visuels (toggle barre adresse, tri, raccourcis).
     /// </summary>
     public partial class Open : Window
     {
         private readonly OpenViewModel _vm;
 
-        // Memorise la colonne et la direction du dernier tri pour le tri cyclique.
         private string         _lastSortProperty;
         private ListSortDirection _lastSortDirection = ListSortDirection.Ascending;
+        private bool           _isEditingPath;
 
-        /// <summary>
-        /// Chemin du fichier selectionne, expose vers l'appelant.
-        /// _vm est garanti non-null (affecte dans le constructeur avant tout appel externe).
-        /// </summary>
         public string SelectedPath => _vm.SelectedPath;
 
         public Open()
@@ -32,8 +29,89 @@ namespace CustomDialogBox
             DataContext = _vm;
         }
 
-        // Note: le handler Window_Loaded n'est plus branche dans le XAML car
-        // LoadDrives est deja appele dans le constructeur d'OpenViewModel.
+        // ------------------------------------------------------------------ //
+        //  Raccourci Alt+D — bascule en mode saisie directe du chemin
+        // ------------------------------------------------------------------ //
+
+        protected override void OnKeyDown(KeyEventArgs e)
+        {
+            base.OnKeyDown(e);
+            if (e.Key == Key.D && (Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt)
+            {
+                SetAddressEditMode(true);
+                e.Handled = true;
+            }
+        }
+
+        private void SetAddressEditMode(bool editing)
+        {
+            _isEditingPath = editing;
+
+            if (editing)
+            {
+                addressBox.Text = _vm.CurrentDirectory ?? string.Empty;
+                breadcrumbBorder.Visibility = Visibility.Collapsed;
+                addressBox.Visibility       = Visibility.Visible;
+                addressBox.SelectAll();
+                addressBox.Focus();
+            }
+            else
+            {
+                addressBox.Visibility       = Visibility.Collapsed;
+                breadcrumbBorder.Visibility = Visibility.Visible;
+            }
+        }
+
+        // ------------------------------------------------------------------ //
+        //  Barre d'adresse (TextBox en mode édition)
+        // ------------------------------------------------------------------ //
+
+        private void AddressBox_KeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter)
+            {
+                e.Handled = true;  // consume BEFORE hiding box — prevents IsDefault button firing
+                var path = addressBox.Text?.Trim();
+                SetAddressEditMode(false);
+
+                if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                    _vm.SetCurrentDirectory(path);
+            }
+            else if (e.Key == Key.Escape)
+            {
+                e.Handled = true;
+                SetAddressEditMode(false);
+            }
+        }
+
+        private void AddressBox_LostFocus(object sender, RoutedEventArgs e)
+        {
+            if (_isEditingPath)
+                SetAddressEditMode(false);
+        }
+
+        private void BreadcrumbBorder_MouseDown(object sender, MouseButtonEventArgs e)
+        {
+            if (e.ClickCount == 1 && !_isEditingPath)
+            {
+                SetAddressEditMode(true);
+                e.Handled = true;
+            }
+        }
+
+        // ------------------------------------------------------------------ //
+        //  Accès rapide
+        // ------------------------------------------------------------------ //
+
+        private void QuickAccess_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            var lb   = sender as ListBox;
+            var item = lb?.SelectedItem as NavItem;
+            if (item == null) return;
+
+            _vm.SetCurrentDirectory(item.FullPath);
+            lb.SelectedItem = null; // permet de re-cliquer le même item
+        }
 
         // ------------------------------------------------------------------ //
         //  TreeView (navigation arborescente)
@@ -44,34 +122,28 @@ namespace CustomDialogBox
             RoutedPropertyChangedEventArgs<object> e)
         {
             var node = e.NewValue as FileSystemNodeViewModel;
-            if (node == null)
-                return;
+            if (node == null) return;
 
-            // Si c'est un repertoire (ou lecteur), on navigue dedans.
             if (!node.IsFile)
                 _vm.SetCurrentDirectory(node.FullPath);
         }
 
         // ------------------------------------------------------------------ //
-        //  ListView (contenu du repertoire courant)
+        //  ListView (contenu du répertoire courant)
         // ------------------------------------------------------------------ //
 
         private void ListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            // Utiliser e.AddedItems pour eviter le couplage implicite au nom du controle XAML.
             if (e.AddedItems.Count == 0) return;
-
             var node = e.AddedItems[0] as FileSystemNodeViewModel;
             if (node == null) return;
 
-            // On selectionne uniquement les fichiers, pas les repertoires.
             if (node.IsFile)
                 _vm.SelectedPath = node.FullPath;
         }
 
         private void ListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
         {
-            // e.AddedItems n'est pas disponible ici — on lit le SelectedItem du sender.
             var lv   = sender as ListView;
             var node = lv?.SelectedItem as FileSystemNodeViewModel;
             if (node == null) return;
@@ -90,12 +162,8 @@ namespace CustomDialogBox
         {
             if (!_vm.HasSelection) return;
 
-            // Validation defensive : le fichier peut avoir ete supprime entre
-            // la navigation et le clic Ouvrir.
-            if (string.IsNullOrWhiteSpace(_vm.SelectedPath) ||
-                !File.Exists(_vm.SelectedPath))
+            if (string.IsNullOrWhiteSpace(_vm.SelectedPath) || !File.Exists(_vm.SelectedPath))
             {
-                // Invalider la selection ; l'utilisateur doit re-selectionner.
                 _vm.SelectedPath = null;
                 return;
             }
@@ -109,7 +177,7 @@ namespace CustomDialogBox
         }
 
         // ------------------------------------------------------------------ //
-        //  Tri par clic sur l'en-tete de colonne
+        //  Tri par clic sur l'en-tête de colonne
         // ------------------------------------------------------------------ //
 
         private void GridViewColumnHeader_Click(object sender, RoutedEventArgs e)
@@ -117,11 +185,10 @@ namespace CustomDialogBox
             var header = sender as GridViewColumnHeader;
             if (header == null) return;
 
-            string property = header.Tag as string;
+            var property = header.Tag as string;
             if (string.IsNullOrEmpty(property)) return;
 
-            // Alterner la direction si on reclique sur la meme colonne.
-            ListSortDirection direction = ListSortDirection.Ascending;
+            var direction = ListSortDirection.Ascending;
             if (property == _lastSortProperty)
                 direction = _lastSortDirection == ListSortDirection.Ascending
                     ? ListSortDirection.Descending

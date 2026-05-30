@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -24,14 +25,25 @@ namespace CustomDialogBox
         {
             Drives          = new ObservableCollection<FileSystemNodeViewModel>();
             CurrentChildren = new ObservableCollection<FileSystemNodeViewModel>();
+            QuickAccess     = new ObservableCollection<NavItem>();
+            Breadcrumbs     = new ObservableCollection<NavItem>();
 
-            // ICommand pour la navigation (appelable depuis le XAML, testable unitairement).
             NavigateCommand = new RelayCommand<string>(
                 path => _ = SetCurrentDirectoryAsync(path),
                 path => !string.IsNullOrEmpty(path));
 
-            // LoadDrives en arriere-plan pour ne pas bloquer le thread UI
-            // si un lecteur USB ou reseau est lent a repondre.
+            GoUpCommand = new RelayCommand(
+                () => {
+                    var parent = GetParentPath(CurrentDirectory);
+                    if (parent != null) SetCurrentDirectory(parent);
+                },
+                () => GetParentPath(CurrentDirectory) != null);
+
+            RefreshCommand = new RelayCommand(
+                () => { if (!string.IsNullOrEmpty(CurrentDirectory)) SetCurrentDirectory(CurrentDirectory); },
+                () => !string.IsNullOrEmpty(CurrentDirectory));
+
+            LoadQuickAccess();
             _ = LoadDrivesAsync();
         }
 
@@ -91,12 +103,77 @@ namespace CustomDialogBox
         // NavigateCommand — ICommand expose pour le XAML et les tests unitaires
         // -----------------------------------------------------------------------
 
-        /// <summary>
-        /// Commande de navigation : charge le contenu du repertoire passe en parametre.
-        /// Remplace l'appel direct a SetCurrentDirectory depuis le code-behind,
-        /// ce qui decouple la vue du ViewModel et facilite les tests unitaires.
-        /// </summary>
         public ICommand NavigateCommand { get; }
+        public ICommand GoUpCommand     { get; }
+        public ICommand RefreshCommand  { get; }
+
+        // -----------------------------------------------------------------------
+        // Quick Access (raccourcis vers emplacements Windows connus)
+        // -----------------------------------------------------------------------
+
+        public ObservableCollection<NavItem> QuickAccess { get; }
+
+        private void LoadQuickAccess()
+        {
+            var specials = new[]
+            {
+                Environment.SpecialFolder.Desktop,
+                Environment.SpecialFolder.MyDocuments,
+                Environment.SpecialFolder.MyPictures,
+                Environment.SpecialFolder.MyMusic,
+                Environment.SpecialFolder.MyVideos,
+                Environment.SpecialFolder.UserProfile,
+            };
+            var labels = new[] { "Bureau", "Documents", "Images", "Musique", "Vidéos", "Profil" };
+
+            for (int i = 0; i < specials.Length; i++)
+            {
+                try
+                {
+                    var path = Environment.GetFolderPath(specials[i]);
+                    if (!string.IsNullOrEmpty(path) && Directory.Exists(path))
+                        QuickAccess.Add(new NavItem(labels[i], path));
+                }
+                catch { }
+            }
+        }
+
+        // -----------------------------------------------------------------------
+        // Breadcrumbs (segments du chemin courant)
+        // -----------------------------------------------------------------------
+
+        public ObservableCollection<NavItem> Breadcrumbs { get; }
+
+        private void UpdateBreadcrumbs(string path)
+        {
+            Breadcrumbs.Clear();
+            if (string.IsNullOrEmpty(path)) return;
+
+            var segments = new List<NavItem>();
+            var current  = path.TrimEnd(Path.DirectorySeparatorChar);
+
+            while (!string.IsNullOrEmpty(current))
+            {
+                var root = Path.GetPathRoot(current);
+                if (current == root || string.IsNullOrEmpty(Path.GetDirectoryName(current)))
+                {
+                    segments.Insert(0, new NavItem(root.TrimEnd(Path.DirectorySeparatorChar), root));
+                    break;
+                }
+                segments.Insert(0, new NavItem(Path.GetFileName(current), current));
+                current = Path.GetDirectoryName(current);
+            }
+
+            foreach (var seg in segments)
+                Breadcrumbs.Add(seg);
+        }
+
+        private static string GetParentPath(string path)
+        {
+            if (string.IsNullOrEmpty(path)) return null;
+            try { return Path.GetDirectoryName(path.TrimEnd(Path.DirectorySeparatorChar)); }
+            catch { return null; }
+        }
 
         // -----------------------------------------------------------------------
         // SetCurrentDirectory — point d'entree interne (et depuis le code-behind si besoin)
@@ -151,9 +228,9 @@ namespace CustomDialogBox
 
             if (ct.IsCancellationRequested) return;
 
-            // CurrentDirectory est mis a jour ICI, apres le chargement reussi,
-            // pour garantir la coherence avec CurrentChildren.
+            // CurrentDirectory + breadcrumbs mis a jour APRES chargement reussi.
             CurrentDirectory = path;
+            UpdateBreadcrumbs(path);
 
             CurrentChildren.Clear();
             foreach (var item in items)
