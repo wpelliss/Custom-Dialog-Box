@@ -1,5 +1,7 @@
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.IO;
+using System.Linq;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Data;
@@ -20,12 +22,13 @@ namespace CustomDialogBox
         private ListSortDirection _lastSortDirection = ListSortDirection.Ascending;
         private bool           _isEditingPath;
 
-        public string SelectedPath => _vm.SelectedPath;
+        public string                 SelectedPath  => _vm.SelectedPath;
+        public IReadOnlyList<string>  SelectedPaths => _vm.SelectedPaths;
 
-        public Open()
+        public Open(IFileSystemProvider provider = null)
         {
             InitializeComponent();
-            _vm = new OpenViewModel();
+            _vm = new OpenViewModel(provider);
             DataContext = _vm;
         }
 
@@ -39,6 +42,12 @@ namespace CustomDialogBox
             if (e.Key == Key.D && (Keyboard.Modifiers & ModifierKeys.Alt) == ModifierKeys.Alt)
             {
                 SetAddressEditMode(true);
+                e.Handled = true;
+            }
+            else if (e.Key == Key.F && (Keyboard.Modifiers & ModifierKeys.Control) == ModifierKeys.Control)
+            {
+                searchBox.Focus();
+                searchBox.SelectAll();
                 e.Handled = true;
             }
         }
@@ -90,6 +99,15 @@ namespace CustomDialogBox
                 SetAddressEditMode(false);
         }
 
+        private void SearchBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Escape)
+            {
+                _vm.FilterText = string.Empty;
+                e.Handled = true;
+            }
+        }
+
         private void BreadcrumbBorder_MouseDown(object sender, MouseButtonEventArgs e)
         {
             if (e.ClickCount == 1 && !_isEditingPath)
@@ -134,12 +152,14 @@ namespace CustomDialogBox
 
         private void ListView_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
-            if (e.AddedItems.Count == 0) return;
-            var node = e.AddedItems[0] as FileSystemNodeViewModel;
-            if (node == null) return;
+            var lv = sender as ListView;
+            if (lv == null) return;
 
-            if (node.IsFile)
-                _vm.SelectedPath = node.FullPath;
+            var selected = lv.SelectedItems
+                             .Cast<FileSystemNodeViewModel>()
+                             .ToList();
+
+            _vm.UpdateSelection(selected);
         }
 
         private void ListView_MouseDoubleClick(object sender, MouseButtonEventArgs e)
@@ -162,11 +182,11 @@ namespace CustomDialogBox
         {
             if (!_vm.HasSelection) return;
 
-            if (string.IsNullOrWhiteSpace(_vm.SelectedPath) || !File.Exists(_vm.SelectedPath))
-            {
-                _vm.SelectedPath = null;
-                return;
-            }
+            var validPaths = _vm.SelectedPaths
+                .Where(p => !string.IsNullOrWhiteSpace(p) && File.Exists(p))
+                .ToList();
+
+            if (validPaths.Count == 0) { _vm.ClearSelection(); return; }
 
             DialogResult = true;
         }
@@ -197,7 +217,7 @@ namespace CustomDialogBox
             _lastSortProperty  = property;
             _lastSortDirection = direction;
 
-            var view = CollectionViewSource.GetDefaultView(listViewFiles.ItemsSource);
+            var view = CollectionViewSource.GetDefaultView(listViewFiles.ItemsSource ?? _vm.CurrentChildren);
             if (view == null) return;
 
             view.SortDescriptions.Clear();

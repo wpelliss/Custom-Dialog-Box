@@ -1,39 +1,46 @@
 # CustomDialogBox — WPF File Open Dialog
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
-[![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.7.2%2B-blueviolet)](https://dotnet.microsoft.com/download/dotnet-framework)
+[![.NET Framework](https://img.shields.io/badge/.NET%20Framework-4.7.2-blueviolet)](https://dotnet.microsoft.com/download/dotnet-framework)
 [![Platform](https://img.shields.io/badge/platform-Windows-0078d7)](https://www.microsoft.com/windows)
+[![Build](https://img.shields.io/badge/build-MSBuild%20VS2022-green)](https://visualstudio.microsoft.com/)
 
-> Custom file browser dialog for WPF applications (.NET Framework 4.7.2+).
-> Replaces the native `OpenFileDialog` with a full-featured Explorer-style dual-pane browser — because sometimes the box Windows ships you just is not the box you need.
-
----
-
-## Why Does This Exist?
-
-The built-in `OpenFileDialog` is fine. It is also a black box. You cannot style it, you cannot filter it your way, you cannot add a favorites panel, and you definitely cannot add a preview pane without doing some pretty dark P/Invoke magic against a COM interface that was designed in 1995.
-
-This project replaces it with a WPF-native dialog you actually own. Full MVVM-partial architecture, lazy-loaded tree, Shell icons from the OS itself, and a clean seam to extend it. The code is yours — read it, fork it, ship it.
+A drop-in replacement for `OpenFileDialog` in WPF/.NET Framework apps. Explorer-style dual-pane browser — tree on the left, file list on the right — with full MVVM architecture, real-time search, multi-selection, and Shell thumbnails for images.
 
 ---
 
 ## Features
 
-- **Lazy-loaded TreeView** — async file system enumeration keeps the UI responsive even on slow network paths or large directory trees
-- **Shell icons via `SHGetFileInfo`** — the exact same icons Windows Explorer shows, keyed by file extension with an in-memory cache
-- **ListView with full metadata columns** — Name, Type, Size, Date Modified
-- **UI virtualization** — `VirtualizingStackPanel` in Recycling mode; scales comfortably to 10 000+ files without a hiccup
-- **Robust error handling** — `UnauthorizedAccess`, `PathTooLong`, hot-unplug of USB drives, and NTFS reparse points are all handled gracefully, not silently swallowed
-- **MVVM-partial architecture** — `FileSystemNodeViewModel` + `OpenViewModel` carry the logic; code-behind is deliberately thin
-- **Keyboard support** — Enter to confirm, Escape to cancel; works the way users expect
-- **Resizable panels** — `GridSplitter` between the tree and the file list
-- **Network drives hidden by default** — reduces noise and avoids accidental hangs on unreachable UNC paths (opt-in to show them)
+### Navigation
+- **Breadcrumb bar** — click any segment to jump up, or click the bar to type a path directly (Alt+D)
+- **Quick Access panel** — Bureau, Documents, Images, Musique, Vidéos, Profil from known Windows folders
+- **Lazy-loaded TreeView** — async enumeration, expand-on-first-open with sentinel pattern
+- **Keyboard shortcuts** — F5 refresh, Backspace up, Alt+D address bar, Ctrl+F search, Enter confirm, Escape cancel
+
+### File Listing
+- **Real-time search** — Ctrl+F to focus the search box, 200 ms debounce, Escape to clear
+- **Multi-selection** — Ctrl+click, Shift+click; file bar shows count when multiple files are selected
+- **4-column ListView** — Name (with Shell icon), Type, Size (KB), Date Modified
+- **Column sorting** — click any header, click again to reverse
+- **UI virtualization** — `VirtualizingStackPanel` in Recycling mode; handles 10 000+ files without a freeze
+
+### Shell Integration
+- **Shell icons** — `SHGetFileInfo` with extension-keyed cache; same icons as Windows Explorer
+- **Thumbnails for images** — `IShellItemImageFactory` via P/Invoke for `.jpg/.jpeg/.png/.gif/.bmp/.webp/.tiff`; uses Windows thumbnail cache, async load, falls back to Shell icon
+- **Reparse point filtering** — symlinks and junctions excluded from the tree and list
+- **Network drives hidden by default** — avoids accidental hangs on unreachable UNC paths
+
+### Architecture
+- **Full MVVM** — `OpenViewModel`, `FileSystemNodeViewModel`, `IFileSystemProvider`
+- **IFileSystemProvider abstraction** — inject a test double for unit tests, or a VFS/cloud backend
+- **Async everywhere** — `Task.Run` + `CancellationToken` for all disk I/O; UI never blocks
+- **Robust error handling** — `UnauthorizedAccess`, `PathTooLong`, USB hot-unplug, all handled gracefully
 
 ---
 
 ## Quick Start
 
-Add the project reference, then drop in a three-liner:
+### Single file selection (drop-in replacement)
 
 ```csharp
 using CustomDialogBox;
@@ -41,93 +48,145 @@ using CustomDialogBox;
 var dialog = new Open { Owner = this };
 if (dialog.ShowDialog() == true)
 {
-    string selectedPath = dialog.SelectedPath;
-    // selectedPath is the full path the user picked
+    string path = dialog.SelectedPath;  // full path of the selected file
 }
 ```
 
-That is it. No NuGet dependency graph, no runtime surprises. Just a `Window` you can instantiate.
+### Multi-file selection
+
+```csharp
+var dialog = new Open { Owner = this };
+if (dialog.ShowDialog() == true)
+{
+    IReadOnlyList<string> paths = dialog.SelectedPaths;  // all selected files
+    string first = dialog.SelectedPath;                   // first (or only) selection
+}
+```
+
+---
+
+## Build
+
+> **Note:** This project targets .NET Framework 4.7.2. Use **MSBuild from Visual Studio 2022**, not `dotnet build` (the .NET SDK refuses to build old-style `.csproj` WPF projects).
+
+```bat
+# From a Developer Command Prompt for VS 2022
+MSBuild CustomDialogBox\CustomDialogBox.csproj /t:Build /p:Configuration=Release
+```
+
+Output lands in `CustomDialogBox\bin\Release\CustomDialogBox.exe`.
 
 ---
 
 ## Requirements
 
-| Requirement | Version |
+| | |
 |---|---|
-| OS | Windows (WPF is Windows-only) |
+| OS | Windows 10 / 11 |
 | .NET Framework | 4.7.2 or later |
 | UI framework | WPF |
-
-> .NET 5 / 6 / 8 compatibility is on the roadmap (see Phase 3 below). The P/Invoke surface and WPF APIs used here are all available on modern .NET — it is mostly a project file migration.
+| Build tool | MSBuild (Visual Studio 2022) |
 
 ---
 
 ## Architecture
 
-Three focused layers, each with a single responsibility:
-
 ```
 CustomDialogBox/
-├── FileSystemNodeViewModel.cs   # Tree node: lazy loading, async enumeration, Shell icons
-├── OpenViewModel.cs             # Dialog state: drives, current file list, selected path
-├── ShellIcons.cs                # P/Invoke wrapper for SHGetFileInfo + extension-keyed cache
-├── Open.xaml                    # Dialog layout: TreeView | GridSplitter | ListView
-└── Open.xaml.cs                 # Thin code-behind: wires ViewModel, handles Enter/Escape
+│
+├── IFileSystemProvider.cs          # Abstraction — inject test doubles or VFS backends
+├── WindowsFileSystemProvider.cs    # Default: wraps FileSystemService + DriveInfo
+│
+├── FileSystemNodeViewModel.cs      # Tree node — lazy load, async icons/thumbnails, INotifyPropertyChanged
+├── FileSystemService.cs            # Static enumeration — EnumerateDirectories/Files, all exception handling
+├── ShellIcons.cs                   # SHGetFileInfo (16×16 icons) + IShellItemImageFactory (thumbnails)
+│
+├── OpenViewModel.cs                # Dialog state — drives, current list, search, selection, breadcrumbs
+├── NavItem.cs                      # Immutable data item for breadcrumb segments and Quick Access entries
+├── RelayCommand.cs                 # ICommand wrappers (generic + non-generic)
+│
+├── Open.xaml                       # Dialog layout — breadcrumb, Quick Access, TreeView, ListView
+└── Open.xaml.cs                    # Thin code-behind — routes events to VM, handles keyboard and address bar
 ```
 
-### FileSystemNodeViewModel
+### Key design decisions
 
-Owns a single node in the tree. Exposes a dummy child on first load so the expand arrow appears, then replaces it with real children on first expand — the classic lazy-load pattern. Enumeration runs on a background thread; results marshal back to the UI thread via `Dispatcher`.
+| Decision | Rationale |
+|---|---|
+| Sentinel child node | TreeView shows expand arrow before enumeration; replace on first expand |
+| `async void LoadChildrenAsync()` | Fire-and-forget is intentional — UI should not await tree expansion |
+| `CancellationToken` per node | Rapid expand/collapse does not accumulate background tasks |
+| Filter via `CollectionViewSource` | Sort and filter share one `ICollectionView`; no data duplication |
+| `IFileSystemProvider` | Makes `OpenViewModel` unit-testable without touching the real file system |
+| Thumbnails lazy-loaded | 32×32 thumbnails via Windows thumbnail cache; falls back to Shell icon without a performance penalty |
 
-### OpenViewModel
+---
 
-Holds the root drive collection and the flat file list for the current directory. When the tree selection changes, `OpenViewModel` repopulates the `ListView`. Keeps `SelectedPath` as a simple bindable string.
+## Extending
 
-### ShellIcons
+### Custom file system backend (VFS, cloud, ZIP)
 
-One static class, one public method: `GetIcon(string path)`. Calls `SHGetFileInfo` with `SHGFI_ICON | SHGFI_SMALLICON | SHGFI_USEFILEATTRIBUTES`, converts the `HICON` to a `BitmapSource`, caches by extension. Cold call is a Win32 round-trip; warm call is a dictionary lookup.
+```csharp
+public class MyCloudProvider : IFileSystemProvider
+{
+    public FileSystemNodeViewModel[] GetChildren(string path, CancellationToken ct = default)
+    {
+        // query your API, return nodes
+    }
+
+    public DriveInfo[] GetDrives() => DriveInfo.GetDrives();
+}
+
+// Inject at construction
+var dialog = new Open(new MyCloudProvider()) { Owner = this };
+```
+
+> The `Open` window's constructor passes the provider through to `OpenViewModel`.
+> You will need to expose a `public Open(IFileSystemProvider provider)` overload — currently the constructor is parameterless but the underlying ViewModel already accepts the provider.
+
+### File validation before Ouvrir fires
+
+Override `BtnOpen_Click` in a subclass or subscribe to `Closing` to add your own guards (MIME check, size limit, signature verification, etc.). `SelectedPaths` gives you the full list before the dialog closes.
+
+---
+
+## Keyboard Reference
+
+| Key | Action |
+|---|---|
+| **Enter** | Confirm selection (Ouvrir) |
+| **Escape** | Cancel / close address bar edit |
+| **F5** | Refresh current directory |
+| **Backspace** | Navigate to parent directory |
+| **Alt+D** | Focus address bar (type a path directly) |
+| **Ctrl+F** | Focus search box |
+| **Ctrl+click** | Add to selection (multi-select) |
+| **Shift+click** | Range selection |
+| **Double-click file** | Confirm selection |
+| **Double-click folder** | Navigate into folder |
 
 ---
 
 ## Roadmap
 
-### Phase 2 — Navigation and Selection
-
-- [ ] Breadcrumb navigation bar (click a segment to jump, or type a path directly)
-- [ ] Multi-selection with Ctrl+click and Shift+click
-- [ ] Quick Access / Favorites panel (pinned folders, recent locations)
-- [ ] Real-time search and filter within the current directory
-
-### Phase 3 — Polish and Distribution
-
-- [ ] Shell thumbnails via `IShellItemImageFactory` for image and document previews
-- [ ] File content validators (max size, allowed MIME types, date range filter)
-- [ ] .NET 5 / 6 / 8 / 9 project targets
-- [ ] NuGet package (pending decision on API surface stability)
+- [ ] `.NET 6 / 8` project target (SDK-style `.csproj`, WPF on modern .NET)
+- [ ] `IFileValidator` composable — max size, magic bytes, date range
+- [ ] File content preview pane (text, image, PDF first page)
+- [ ] Pinned favorites in Quick Access (persist to `%APPDATA%`)
+- [ ] NuGet package (pending API surface review)
 
 ---
 
 ## Contributing
 
-Issues and PRs are welcome. If you are adding a feature:
+Issues and PRs are welcome.
 
-1. Keep the three-layer separation intact — Shell interop belongs in `ShellIcons`, not scattered through ViewModels
-2. Do not block the UI thread — any enumeration that touches the file system goes async
-3. Match the existing code style (no regions, explicit types over `var` for non-obvious returns)
-
----
-
-## References and Prior Art
-
-The design draws on two solid writeups that are worth reading if you want to understand the TreeView lazy-load pattern and the Shell icon integration:
-
-- [Designing a WPF TreeView File Explorer](https://medium.com/@mikependon/designing-a-wpf-treeview-file-explorer-565a3f13f6f2) — Mike Pendon
-- [WPF Windows Explorer-like TreeView](https://docs.telerik.com/devtools/wpf/controls/radtreeview/how-to/wpf-windowsexplorer-like-treeview) — Telerik Docs
+- Shell interop belongs in `ShellIcons.cs`, not in ViewModels
+- Any disk I/O must be off the UI thread (`Task.Run` + `CancellationToken`)
+- Code style: no `var` for non-obvious types, no regions, no XML doc on obvious members
 
 ---
 
 ## License
 
-MIT. See [LICENSE](LICENSE) for the full text.
-
-Do what you want with it. Ship it in a product, fork it, teach with it. Attribution appreciated but not required.
+MIT — see [LICENSE](LICENSE). Ship it, fork it, teach with it.

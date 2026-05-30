@@ -178,21 +178,33 @@ namespace CustomDialogBox
         }
 
         // -----------------------------------------------------------------------
-        // Async icon loading (yielded to avoid blocking the UI thread)
+        // Async icon / thumbnail loading
         // -----------------------------------------------------------------------
+
+        private static readonly System.Collections.Generic.HashSet<string> _thumbnailExts =
+            new System.Collections.Generic.HashSet<string>(StringComparer.OrdinalIgnoreCase)
+            { ".jpg", ".jpeg", ".png", ".gif", ".bmp", ".webp", ".tiff", ".tif" };
 
         private async void LoadIconAsync()
         {
-            await Task.Yield(); // let the UI initialize before loading icons
+            await Task.Yield();
 
             try
             {
+                if (_kind == Kind.File && _thumbnailExts.Contains(Path.GetExtension(Name)))
+                {
+                    var thumb = await Task.Run(() => ShellIcons.GetThumbnail(FullPath, 32));
+                    if (thumb != null) { Icon = thumb; return; }
+                }
+
                 Icon = _kind == Kind.File
                     ? ShellIcons.GetFileIcon(Path.GetExtension(Name))
                     : ShellIcons.GetDirectoryIcon();
             }
-            catch { /* icon loading is non-critical */ }
+            catch { }
         }
+
+        public override string ToString() => Name;
 
         // -----------------------------------------------------------------------
         // INotifyPropertyChanged

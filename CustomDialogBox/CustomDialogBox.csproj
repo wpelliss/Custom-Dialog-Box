@@ -74,6 +74,8 @@
   </ItemGroup>
   <ItemGroup>
     <Compile Include="FileSystemNodeViewModel.cs" />
+    <Compile Include="IFileSystemProvider.cs" />
+    <Compile Include="WindowsFileSystemProvider.cs" />
     <Compile Include="FileSystemService.cs" />
     <Compile Include="Open.xaml.cs">
       <DependentUpon>Open.xaml</DependentUpon>

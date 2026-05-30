@@ -4,10 +4,13 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.IO;
+using System.Linq;
 using System.Runtime.CompilerServices;
 using System.Threading;
 using System.Threading.Tasks;
+using System.Windows.Data;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 namespace CustomDialogBox
 {
@@ -21,8 +24,12 @@ namespace CustomDialogBox
         // Construction
         // -----------------------------------------------------------------------
 
-        public OpenViewModel()
+        private readonly IFileSystemProvider _provider;
+        private readonly DispatcherTimer     _filterDebounce;
+
+        public OpenViewModel(IFileSystemProvider provider = null)
         {
+            _provider       = provider ?? new WindowsFileSystemProvider();
             Drives          = new ObservableCollection<FileSystemNodeViewModel>();
             CurrentChildren = new ObservableCollection<FileSystemNodeViewModel>();
             QuickAccess     = new ObservableCollection<NavItem>();
@@ -33,15 +40,15 @@ namespace CustomDialogBox
                 path => !string.IsNullOrEmpty(path));
 
             GoUpCommand = new RelayCommand(
-                () => {
-                    var parent = GetParentPath(CurrentDirectory);
-                    if (parent != null) SetCurrentDirectory(parent);
-                },
+                () => { var p = GetParentPath(CurrentDirectory); if (p != null) SetCurrentDirectory(p); },
                 () => GetParentPath(CurrentDirectory) != null);
 
             RefreshCommand = new RelayCommand(
                 () => { if (!string.IsNullOrEmpty(CurrentDirectory)) SetCurrentDirectory(CurrentDirectory); },
                 () => !string.IsNullOrEmpty(CurrentDirectory));
+
+            _filterDebounce = new DispatcherTimer { Interval = TimeSpan.FromMilliseconds(200) };
+            _filterDebounce.Tick += (s, e) => { _filterDebounce.Stop(); ApplyFilter(); };
 
             LoadQuickAccess();
             _ = LoadDrivesAsync();
@@ -61,9 +68,7 @@ namespace CustomDialogBox
             DriveInfo[] drives;
             try
             {
-                // DriveInfo.GetDrives() peut bloquer sur des lecteurs USB lents —
-                // on le deplace hors du thread UI.
-                drives = await Task.Run(() => DriveInfo.GetDrives());
+                drives = await Task.Run(() => _provider.GetDrives());
             }
             catch (Exception ex)
             {
@@ -106,6 +111,71 @@ namespace CustomDialogBox
         public ICommand NavigateCommand { get; }
         public ICommand GoUpCommand     { get; }
         public ICommand RefreshCommand  { get; }
+
+        // -----------------------------------------------------------------------
+        // FilterText — real-time search with 200 ms debounce
+        // -----------------------------------------------------------------------
+
+        private string _filterText = string.Empty;
+
+        public string FilterText
+        {
+            get { return _filterText; }
+            set
+            {
+                if (_filterText == value) return;
+                _filterText = value ?? string.Empty;
+                OnPropertyChanged();
+                _filterDebounce.Stop();
+                _filterDebounce.Start();
+            }
+        }
+
+        private void ApplyFilter()
+        {
+            var view = CollectionViewSource.GetDefaultView(CurrentChildren);
+            view.Filter = string.IsNullOrEmpty(_filterText) ? (Predicate<object>)null : FilterNode;
+        }
+
+        private bool FilterNode(object obj)
+        {
+            var node = obj as FileSystemNodeViewModel;
+            return node != null &&
+                   node.Name.IndexOf(_filterText, StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
+        // -----------------------------------------------------------------------
+        // Multi-selection
+        // -----------------------------------------------------------------------
+
+        private readonly List<string> _selectedPaths = new List<string>();
+
+        /// <summary>All currently selected file paths (may be empty).</summary>
+        public IReadOnlyList<string> SelectedPaths => _selectedPaths.AsReadOnly();
+
+        /// <summary>
+        /// Replace the selection with the provided nodes.
+        /// Only file nodes (not directories) are retained.
+        /// </summary>
+        public void UpdateSelection(IEnumerable<FileSystemNodeViewModel> nodes)
+        {
+            _selectedPaths.Clear();
+            _selectedPaths.AddRange(nodes.Where(n => n.IsFile).Select(n => n.FullPath));
+            _selectedPath = _selectedPaths.Count > 0 ? _selectedPaths[0] : null;
+            OnPropertyChanged(nameof(SelectedPath));
+            OnPropertyChanged(nameof(SelectedFileName));
+            OnPropertyChanged(nameof(HasSelection));
+        }
+
+        /// <summary>Clear all selected files.</summary>
+        public void ClearSelection()
+        {
+            _selectedPaths.Clear();
+            _selectedPath = null;
+            OnPropertyChanged(nameof(SelectedPath));
+            OnPropertyChanged(nameof(SelectedFileName));
+            OnPropertyChanged(nameof(HasSelection));
+        }
 
         // -----------------------------------------------------------------------
         // Quick Access (raccourcis vers emplacements Windows connus)
@@ -211,7 +281,7 @@ namespace CustomDialogBox
             FileSystemNodeViewModel[] items;
             try
             {
-                items = await Task.Run(() => FileSystemService.EnumerateChildren(path, ct), ct);
+                items = await Task.Run(() => _provider.GetChildren(path, ct), ct);
             }
             catch (OperationCanceledException)
             {
@@ -260,9 +330,7 @@ namespace CustomDialogBox
 
         private string _selectedPath;
 
-        /// <summary>
-        /// Chemin complet du fichier selectionne par l'utilisateur.
-        /// </summary>
+        /// <summary>Primary selected path (first in selection, or null).</summary>
         public string SelectedPath
         {
             get { return _selectedPath; }
@@ -270,32 +338,30 @@ namespace CustomDialogBox
             {
                 if (_selectedPath == value) return;
                 _selectedPath = value;
+                _selectedPaths.Clear();
+                if (value != null) _selectedPaths.Add(value);
                 OnPropertyChanged();
                 OnPropertyChanged(nameof(SelectedFileName));
                 OnPropertyChanged(nameof(HasSelection));
             }
         }
 
-        /// <summary>
-        /// Nom seul du fichier selectionne (derive de SelectedPath, lecture seule).
-        /// </summary>
+        /// <summary>Display name shown in the file bar — multi-select aware.</summary>
         public string SelectedFileName
         {
             get
             {
-                if (string.IsNullOrEmpty(_selectedPath)) return string.Empty;
-                try { return Path.GetFileName(_selectedPath); }
-                catch { return _selectedPath; }
+                if (_selectedPaths.Count == 0) return string.Empty;
+                if (_selectedPaths.Count == 1)
+                {
+                    try { return Path.GetFileName(_selectedPaths[0]); }
+                    catch { return _selectedPaths[0]; }
+                }
+                return $"{_selectedPaths.Count} fichiers sélectionnés";
             }
         }
 
-        /// <summary>
-        /// Vrai si un fichier est selectionne et que son chemin n'est pas vide.
-        /// </summary>
-        public bool HasSelection
-        {
-            get { return !string.IsNullOrWhiteSpace(_selectedPath); }
-        }
+        public bool HasSelection => _selectedPaths.Count > 0;
 
         // -----------------------------------------------------------------------
         // INotifyPropertyChanged

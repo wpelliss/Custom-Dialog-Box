@@ -66,6 +66,27 @@ namespace CustomDialogBox
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool DestroyIcon(IntPtr hIcon);
 
+        [DllImport("gdi32.dll")]
+        private static extern bool DeleteObject(IntPtr hObject);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHCreateItemFromParsingName(
+            string pszPath, IntPtr pbc, ref Guid riid,
+            [MarshalAs(UnmanagedType.Interface)] out object ppv);
+
+        [ComImport, Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b"),
+         InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+        private interface IShellItemImageFactory
+        {
+            [PreserveSig] int GetImage([In] SIZE size, [In] SIIGBF flags, out IntPtr phbm);
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct SIZE { public int cx, cy; }
+
+        [Flags]
+        private enum SIIGBF : int { ResizeToFit = 0x00, ThumbnailOnly = 0x08 }
+
         // -----------------------------------------------------------------------
         // SHGFI flags
         // -----------------------------------------------------------------------
@@ -96,11 +117,19 @@ namespace CustomDialogBox
         private const int MAX_PATH = 260;
 
         // -----------------------------------------------------------------------
-        // Cache — key: (lower-cased extension or "__dir__", largeIcon)
+        // Cache
         // -----------------------------------------------------------------------
 
         private static readonly ConcurrentDictionary<(string, bool), BitmapSource> _cache =
             new ConcurrentDictionary<(string, bool), BitmapSource>();
+
+        // Thumbnail cache: keyed by full path — bounded to 500 entries (LRU not implemented,
+        // size is small in practice since users rarely open thousands of image folders).
+        private static readonly ConcurrentDictionary<string, BitmapSource> _thumbCache =
+            new ConcurrentDictionary<string, BitmapSource>(StringComparer.OrdinalIgnoreCase);
+
+        private static readonly Guid IID_IShellItemImageFactory =
+            new Guid("bcc18b79-ba16-442f-80c4-8a59c30c463b");
 
         // -----------------------------------------------------------------------
         // Public API
@@ -123,6 +152,51 @@ namespace CustomDialogBox
 
             var key = (extension.ToLowerInvariant(), largeIcon);
             return _cache.GetOrAdd(key, k => CreateFileIcon(k.Item1, k.Item2));
+        }
+
+        /// <summary>
+        /// Returns the Shell thumbnail for a file path at the requested pixel size.
+        /// Uses IShellItemImageFactory — leverages Windows thumbnail cache (fast).
+        /// Returns <c>null</c> if the Shell cannot produce a thumbnail (no image, long path, etc.).
+        /// Thread-safe; marshalled to STA if needed.
+        /// </summary>
+        public static BitmapSource GetThumbnail(string path, int size = 32)
+        {
+            if (string.IsNullOrEmpty(path) || path.Length >= MAX_PATH) return null;
+
+            return _thumbCache.GetOrAdd(path, p => CreateThumbnail(p, size));
+        }
+
+        private static BitmapSource CreateThumbnail(string path, int size)
+        {
+            if (!Application.Current.Dispatcher.CheckAccess())
+            {
+                return (BitmapSource)Application.Current.Dispatcher.Invoke(
+                    (Func<BitmapSource>)(() => CreateThumbnail(path, size)));
+            }
+
+            try
+            {
+                Guid iid = IID_IShellItemImageFactory;
+                int hr   = SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out object ppv);
+                if (hr != 0 || ppv == null) return null;
+
+                var factory = ppv as IShellItemImageFactory;
+                if (factory == null) return null;
+
+                hr = factory.GetImage(new SIZE { cx = size, cy = size }, SIIGBF.ResizeToFit, out IntPtr hbm);
+                if (hr != 0 || hbm == IntPtr.Zero) return null;
+
+                try
+                {
+                    BitmapSource bs = Imaging.CreateBitmapSourceFromHBitmap(
+                        hbm, IntPtr.Zero, Int32Rect.Empty, BitmapSizeOptions.FromEmptyOptions());
+                    bs.Freeze();
+                    return bs;
+                }
+                finally { DeleteObject(hbm); }
+            }
+            catch { return null; }
         }
 
         /// <summary>
